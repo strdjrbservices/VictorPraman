@@ -64,4 +64,20 @@ urlpatterns = [
     path('files/old_revised', views.list_old_revised_files, name='list_old_revised_files'),
     path('files/html_ref', views.list_html_files, name='list_html_files'),
     
+    # MongoDB Guidelines Endpoints
+    path('guidelines/state/', views.get_state_guidelines_view, name='get_state_guidelines'),
+    path('guidelines/client/', views.get_client_guidelines_view, name='get_client_guidelines'),
+    path('guidelines/all/', views.get_all_guidelines_view, name='get_all_guidelines'),
+    path('guidelines/refresh/', views.refresh_guidelines_view, name='refresh_guidelines'),
+    path('guidelines/auth-status/', views.get_guidelines_auth_status_view, name='guidelines_auth_status'),
+    path('guidelines/state/add/', views.add_state_guideline_view, name='add_state_guideline'),
+    path('guidelines/state/update/', views.update_state_guideline_view, name='update_state_guideline'),
+    path('guidelines/state/delete/<str:doc_id>/', views.delete_state_guideline_view, name='delete_state_guideline_by_path'),
+    path('guidelines/state/delete/', views.delete_state_guideline_view, name='delete_state_guideline'),
+    path('guidelines/client/add/', views.add_client_guideline_view, name='add_client_guideline'),
+    path('guidelines/client/update/', views.update_client_guideline_view, name='update_client_guideline'),
+    path('guidelines/client/delete/', views.delete_client_guideline_view, name='delete_client_guideline'),
+
+    # MongoDB Field Validation Rules Endpoints
+    path('validation/rules/', views.get_validation_rules_view, name='get_validation_rules'),
 ]

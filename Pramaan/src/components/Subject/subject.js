@@ -96,6 +96,7 @@ import * as priorSaleHistoryValidation from '../../validations/priorSaleHistoryV
 import * as htmlDataValidation from '../../validations/htmldatavaliadtion';
 import * as infoOfSalesValidation from '../../validations/infoOfSalesValidation';
 import * as version1Validation from './Version1/version1Validation';
+import { fetchDatabaseRules, validateFieldWithDbRules, getDbRevisionRemark } from '../../validations/dbValidationService';
 
 import PremiumLogo from '../auth/logo';
 import { SUBJECT_REVISION_PROMPTS, CONTRACT_REVISION_PROMPTS, NEIGHBORHOOD_REVISION_PROMPTS, SITE_REVISION_PROMPTS, IMPROVEMENTS_REVISION_PROMPTS, SALES_GRID_REVISION_PROMPTS, RECONCILIATION_REVISION_PROMPTS, COST_APPROACH_REVISION_PROMPTS, CERTIFICATION_REVISION_PROMPTS, ADDENDUM_GENERAL_REVISION_PROMPTS, FORM_1007_REVISION_PROMPTS } from '../tools/revisionPrompts';
@@ -406,6 +407,13 @@ function Subject({ defaultFormType }) {
   const [isValidationSectionMinimized, setIsValidationSectionMinimized] = useState(false);
   const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false);
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState(null);
+  const [dbRulesLoaded, setDbRulesLoaded] = useState(false);
+
+  useEffect(() => {
+    fetchDatabaseRules().then(() => {
+      setDbRulesLoaded(true);
+    }).catch(() => { });
+  }, []);
 
   useEffect(() => {
     const fType = queryParams.get('formType');
@@ -1025,6 +1033,12 @@ function Subject({ defaultFormType }) {
       }
     }
 
+    // Dynamic rule from MongoDB Revision database
+    const dbRemark = getDbRevisionRemark(cleanField, sectionTitle, valueStr);
+    if (dbRemark) {
+      return dbRemark + valueSuffix;
+    }
+
     // 2. Assignment Type handling
     if (baseFieldName.toLowerCase() === 'assignment type' || cleanField.toLowerCase().includes('assignment type')) {
       return `Please revise the assignment type according to contract section.${valueSuffix}`;
@@ -1234,6 +1248,22 @@ function Subject({ defaultFormType }) {
       if (manualValidations && manualValidations[JSON.stringify(path)]) {
         return;
       }
+
+      // Dynamic validation using MongoDB Revision rules from database
+      try {
+        const dbRes = validateFieldWithDbRules(lookupField, value, allData, path);
+        if (dbRes && dbRes.isError) {
+          const properSection = getProperSectionName(path, sectionName);
+          const actualFieldName = fieldName;
+          const formattedFieldName = `${actualFieldName}${saleName && saleName !== 'Subject' ? ` (${saleName})` : ''}`;
+          const errKey = `${properSection.toLowerCase()}|${actualFieldName.toLowerCase()}|${dbRes.message.toLowerCase()}`;
+          if (!seenErrorKeys.has(errKey)) {
+            seenErrorKeys.add(errKey);
+            errors.push([properSection, formattedFieldName, dbRes.message, path]);
+          }
+          return;
+        }
+      } catch (e) { }
 
       const lookupKey = Object.keys(customRegistry).find(k => k.toLowerCase() === String(lookupField).toLowerCase()) || lookupField;
       const validationFns = customRegistry[lookupKey] || [];

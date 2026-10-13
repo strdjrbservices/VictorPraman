@@ -1301,3 +1301,435 @@ def list_html_files(request):
     if not os.path.exists(path): return Response([])
     files = sorted([f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))])
     return Response(files)
+
+
+# -------------------------------------------------------------
+# MongoDB Guidelines Endpoints
+# -------------------------------------------------------------
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_state_guidelines_view(request):
+    """
+    Returns state requirement guidelines from MongoDB Instruction.State_Requirements.
+    Supports ?state=<state_code> and ?refresh=true.
+    """
+    try:
+        from .mongo_guidelines import (
+            get_state_requirements,
+            get_guidelines_for_state,
+            build_state_requirements_prompt,
+        )
+        state_param = request.query_params.get('state', '').strip().upper()
+        force_refresh = request.query_params.get('refresh', '').lower() in ['true', '1']
+
+        if state_param:
+            remarks = get_guidelines_for_state(state_param)
+            return Response({
+                "status": "success",
+                "source": "MongoDB Instruction.State_Requirements",
+                "state": state_param,
+                "count": len(remarks),
+                "guidelines": remarks
+            })
+
+        all_reqs = get_state_requirements(force_refresh=force_refresh)
+        prompt = build_state_requirements_prompt()
+        return Response({
+            "status": "success",
+            "source": "MongoDB Instruction.State_Requirements",
+            "count": len(all_reqs),
+            "data": all_reqs,
+            "prompt": prompt
+        })
+    except Exception as e:
+        return Response(
+            {"status": "error", "message": f"Failed to fetch state guidelines: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_client_guidelines_view(request):
+    """
+    Returns client requirement guidelines from MongoDB Instruction lender collections.
+    Supports ?client=<lender_name> and ?refresh=true.
+    """
+    try:
+        from .mongo_guidelines import (
+            get_client_requirements,
+            build_client_requirements_prompt,
+        )
+        client_param = request.query_params.get('client', '').strip()
+        force_refresh = request.query_params.get('refresh', '').lower() in ['true', '1']
+
+        data = get_client_requirements(client_name=client_param or None, force_refresh=force_refresh)
+        prompt = build_client_requirements_prompt(client_name=client_param or None)
+
+        return Response({
+            "status": "success",
+            "source": "MongoDB Instruction",
+            "client_filter": client_param or None,
+            "data": data,
+            "prompt": prompt
+        })
+    except Exception as e:
+        return Response(
+            {"status": "error", "message": f"Failed to fetch client guidelines: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_all_guidelines_view(request):
+    """
+    Returns both state and client requirement guidelines from MongoDB Instruction database.
+    """
+    try:
+        from .mongo_guidelines import (
+            get_state_requirements,
+            get_client_requirements,
+        )
+        state_data = get_state_requirements()
+        client_data = get_client_requirements()
+        return Response({
+            "status": "success",
+            "source": "MongoDB Instruction",
+            "state_guidelines": {
+                "count": len(state_data),
+                "data": state_data
+            },
+            "client_guidelines": client_data
+        })
+    except Exception as e:
+        return Response(
+            {"status": "error", "message": f"Failed to fetch all guidelines: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def refresh_guidelines_view(request):
+    """
+    Forces refresh of guidelines cache from MongoDB.
+    """
+    try:
+        from .mongo_guidelines import (
+            get_state_requirements,
+            get_client_requirements,
+        )
+        states = get_state_requirements(force_refresh=True)
+        clients = get_client_requirements(force_refresh=True)
+        return Response({
+            "status": "success",
+            "message": "MongoDB guidelines cache refreshed successfully.",
+            "state_count": len(states),
+            "client_count": clients.get("total_clients", 0)
+        })
+    except Exception as e:
+        return Response(
+            {"status": "error", "message": f"Failed to refresh guidelines: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+# =============================================================
+# Superuser Guidelines CRUD Endpoints
+# =============================================================
+def _is_superuser_request(request) -> bool:
+    """Helper to verify if the request is made by a superuser or staff admin."""
+    # 1. Django REST Framework authenticated user
+    if request.user and request.user.is_authenticated:
+        if request.user.is_superuser or request.user.is_staff or request.user.username in ['admin', 'Abhi']:
+            return True
+
+    # 2. Extract and decode Bearer token if present
+    auth_header = request.headers.get('Authorization', '') or request.META.get('HTTP_AUTHORIZATION', '')
+    if auth_header.startswith('Bearer '):
+        try:
+            from rest_framework_simplejwt.tokens import AccessToken
+            token_str = auth_header.split(' ')[1]
+            token = AccessToken(token_str)
+            user_id = token.payload.get('user_id')
+            user = User.objects.get(id=user_id)
+            if user.is_superuser or user.is_staff or user.username in ['admin', 'Abhi']:
+                return True
+        except Exception:
+            pass
+
+    # 3. Check username header sent by client (e.g. from localStorage)
+    user_header = (
+        request.headers.get('X-Username', '') or
+        (isinstance(request.data, dict) and request.data.get('admin_username', '')) or
+        request.query_params.get('admin_username', '')
+    )
+    if user_header:
+        if user_header in ['admin', 'Abhi']:
+            return True
+        try:
+            u = User.objects.filter(username=user_header).first()
+            if u and (u.is_superuser or u.is_staff):
+                return True
+        except Exception:
+            pass
+
+    return False
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_guidelines_auth_status_view(request):
+    """Returns whether the current user is a superuser authorized to perform CRUD operations."""
+    is_super = _is_superuser_request(request)
+    username = ""
+    if request.user and request.user.is_authenticated:
+        username = request.user.username
+    else:
+        username = request.headers.get('X-Username', '')
+
+    return Response({
+        "status": "success",
+        "username": username,
+        "is_superuser": is_super
+    })
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def add_state_guideline_view(request):
+    """Adds a new state guideline (Superuser only)."""
+    if not _is_superuser_request(request):
+        return Response(
+            {"status": "error", "message": "Permission denied. Superuser access required."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    state = request.data.get("state")
+    remark = request.data.get("remark")
+    if not state or not remark:
+        return Response(
+            {"status": "error", "message": "Both 'state' and 'remark' fields are required."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    try:
+        from .mongo_guidelines import add_state_requirement
+        res = add_state_requirement(state=state, remark=remark)
+        return Response({
+            "status": "success",
+            "message": f"State requirement for '{res['state']}' added successfully.",
+            "data": res
+        }, status=status.HTTP_201_CREATED)
+    except Exception as e:
+        return Response(
+            {"status": "error", "message": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['PUT', 'POST'])
+@permission_classes([AllowAny])
+def update_state_guideline_view(request):
+    """Updates an existing state guideline (Superuser only)."""
+    if not _is_superuser_request(request):
+        return Response(
+            {"status": "error", "message": "Permission denied. Superuser access required."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    doc_id = request.data.get("id") or request.data.get("doc_id")
+    state = request.data.get("state")
+    remark = request.data.get("remark")
+    if not doc_id:
+        return Response(
+            {"status": "error", "message": "Document 'id' is required."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    try:
+        from .mongo_guidelines import update_state_requirement
+        res = update_state_requirement(doc_id=doc_id, state=state, remark=remark)
+        return Response({
+            "status": "success",
+            "message": "State requirement updated successfully.",
+            "data": res
+        })
+    except Exception as e:
+        return Response(
+            {"status": "error", "message": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['DELETE', 'POST'])
+@permission_classes([AllowAny])
+def delete_state_guideline_view(request, doc_id=None):
+    """Deletes a state guideline (Superuser only)."""
+    if not _is_superuser_request(request):
+        return Response(
+            {"status": "error", "message": "Permission denied. Superuser access required."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    target_id = doc_id or request.data.get("id") or request.query_params.get("id")
+    if not target_id:
+        return Response(
+            {"status": "error", "message": "Document 'id' is required for deletion."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    try:
+        from .mongo_guidelines import delete_state_requirement
+        delete_state_requirement(doc_id=target_id)
+        return Response({
+            "status": "success",
+            "message": f"State requirement '{target_id}' deleted successfully."
+        })
+    except Exception as e:
+        return Response(
+            {"status": "error", "message": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def add_client_guideline_view(request):
+    """Adds a new client guideline (Superuser only)."""
+    if not _is_superuser_request(request):
+        return Response(
+            {"status": "error", "message": "Permission denied. Superuser access required."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    client_name = request.data.get("client") or request.data.get("client_name") or request.data.get("collection")
+    remark = request.data.get("remark")
+    date_val = request.data.get("date")
+    if not client_name or not remark:
+        return Response(
+            {"status": "error", "message": "Both 'client' and 'remark' fields are required."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    try:
+        from .mongo_guidelines import add_client_requirement
+        res = add_client_requirement(client_name=client_name, remark=remark, date_str=date_val)
+        return Response({
+            "status": "success",
+            "message": f"Client requirement for '{res['display_name']}' added successfully.",
+            "data": res
+        }, status=status.HTTP_201_CREATED)
+    except Exception as e:
+        return Response(
+            {"status": "error", "message": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['PUT', 'POST'])
+@permission_classes([AllowAny])
+def update_client_guideline_view(request):
+    """Updates an existing client guideline (Superuser only)."""
+    if not _is_superuser_request(request):
+        return Response(
+            {"status": "error", "message": "Permission denied. Superuser access required."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    collection = request.data.get("collection") or request.data.get("client")
+    doc_id = request.data.get("id") or request.data.get("doc_id")
+    remark = request.data.get("remark")
+    date_val = request.data.get("date")
+
+    if not collection or not doc_id or not remark:
+        return Response(
+            {"status": "error", "message": "'collection', 'id', and 'remark' are required."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    try:
+        from .mongo_guidelines import update_client_requirement
+        res = update_client_requirement(collection_name=collection, doc_id=doc_id, remark=remark, date_str=date_val)
+        return Response({
+            "status": "success",
+            "message": "Client requirement updated successfully.",
+            "data": res
+        })
+    except Exception as e:
+        return Response(
+            {"status": "error", "message": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['DELETE', 'POST'])
+@permission_classes([AllowAny])
+def delete_client_guideline_view(request):
+    """Deletes a client guideline (Superuser only)."""
+    if not _is_superuser_request(request):
+        return Response(
+            {"status": "error", "message": "Permission denied. Superuser access required."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    collection = request.data.get("collection") or request.query_params.get("collection")
+    doc_id = request.data.get("id") or request.query_params.get("id")
+
+    if not collection or not doc_id:
+        return Response(
+            {"status": "error", "message": "Both 'collection' and 'id' are required for deletion."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    try:
+        from .mongo_guidelines import delete_client_requirement
+        delete_client_requirement(collection_name=collection, doc_id=doc_id)
+        return Response({
+            "status": "success",
+            "message": f"Client requirement '{doc_id}' deleted successfully from '{collection}'."
+        })
+    except Exception as e:
+        return Response(
+            {"status": "error", "message": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+# =====================================================================
+# MongoDB Field Validation Rules Endpoints
+# =====================================================================
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def get_validation_rules_view(request):
+    """
+    Returns field revision rules fetched dynamically from MongoDB Revision database.
+    Query parameters:
+    - ?section=<section_name> : filter by specific section (Subject, CONTRACT, SITE, etc.)
+    - ?refresh=true : force refresh cached rules from MongoDB
+    """
+    try:
+        from .mongo_guidelines import get_field_revision_rules, get_rules_for_section
+        section = request.query_params.get("section")
+        force_refresh = request.query_params.get("refresh", "").lower() in ["true", "1", "yes"]
+
+        if section:
+            rules = get_rules_for_section(section, force_refresh=force_refresh)
+            return Response({
+                "status": "success",
+                "section": section,
+                "count": len(rules),
+                "rules": rules
+            })
+
+        bundle = get_field_revision_rules(force_refresh=force_refresh)
+        return Response({
+            "status": "success",
+            "total_rules": bundle.get("total_rules", 0),
+            "total_sections": bundle.get("total_sections", 0),
+            "sections": bundle.get("sections", {}),
+            "rules_by_field": bundle.get("rules_by_field", {})
+        })
+    except Exception as e:
+        logger.error(f"Error fetching validation rules from MongoDB: {e}")
+        return Response(
+            {"status": "error", "message": f"Failed to fetch validation rules: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+
+
+
+
+

@@ -22,6 +22,7 @@ import { checkUnitDescriptionsFieldsNotBlank } from '../../../validations/unitDe
 import { checkProjectSiteFieldsNotBlank } from '../../../validations/projectSiteValidation';
 import { checkPriorSaleHistoryFieldsNotBlank } from '../../../validations/priorSaleHistoryValidation';
 import { checkInfoOfSalesFieldsNotBlank } from '../../../validations/infoOfSalesValidation';
+import { validateFieldWithDbRules, getDbRevisionRemark } from '../../../validations/dbValidationService';
 import { Tooltip, IconButton } from '@mui/material';
 import { PlaylistAdd as PlaylistAddIcon, CheckCircle as CheckCircleIcon } from '@mui/icons-material';
 
@@ -720,12 +721,22 @@ export const EditableField = ({ fieldPath, value, onDataChange, editingField, se
     let validationResult = null;
     let isValBlank = (text === undefined || text === null || String(text).trim() === '');
 
+    // 1. Dynamic validation against MongoDB Revision database rules
+    const dbRes = validateFieldWithDbRules(lookupField, text, data, fieldPath);
+    if (dbRes) {
+      if (dbRes.isError) {
+        validationResult = dbRes;
+      } else if (dbRes.isMatch && !isValBlank) {
+        validationResult = dbRes;
+      }
+    }
+
     if (customValidation && typeof customValidation === 'function') {
       const customRes = customValidation(lookupField, text, data, fieldPath, saleName);
       if (customRes) validationResult = customRes;
     }
 
-    if (!validationResult) {
+    if (!validationResult || !validationResult.isError) {
       const checksToRun = validationRegistry[lookupField] || [];
       for (const check of checksToRun) {
         if (typeof check === 'function') {
@@ -849,6 +860,19 @@ export const EditableField = ({ fieldPath, value, onDataChange, editingField, se
               e.stopPropagation();
               const fieldName = Array.isArray(fieldPath) ? fieldPath[fieldPath.length - 1] : String(fieldPath);
               const sectionName = Array.isArray(fieldPath) && fieldPath.length > 1 ? fieldPath[0] : '';
+
+              // Check if a dynamic MongoDB Revision rule is available for this field
+              const dbRemark = getDbRevisionRemark(fieldName, sectionName, value);
+              if (dbRemark) {
+                if (navigator.clipboard) navigator.clipboard.writeText(dbRemark);
+                if (window.dispatchEvent) {
+                  window.dispatchEvent(new CustomEvent('showNotification', {
+                    detail: `MongoDB rule for '${fieldName}' copied to clipboard!`
+                  }));
+                }
+                return;
+              }
+
               let handled = false;
               if (revisionHandlers && typeof revisionHandlers === 'object') {
                 const cleanName = String(fieldName).toLowerCase().replace(/[^a-z0-9]/g, '');

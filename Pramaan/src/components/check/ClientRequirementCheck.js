@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import {
   Box,
   Button,
@@ -17,12 +17,32 @@ import {
   FormControl,
   InputLabel,
   Select,
-  MenuItem
+  MenuItem,
+  Collapse,
+  Chip,
+  TextField,
+  InputAdornment,
+  Tooltip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
+  IconButton,
+  Snackbar
 } from '@mui/material';
 import TableChartIcon from '@mui/icons-material/TableChart';
 import CodeIcon from '@mui/icons-material/Code';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
+import StorageIcon from '@mui/icons-material/Storage';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import SearchIcon from '@mui/icons-material/Search';
+import AddIcon from '@mui/icons-material/Add';
+import EditIcon from '@mui/icons-material/Edit';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings';
+import { API_BASE_URL } from '../Subject/utils/utils.js';
 
 export const CLIENT_REQUIREMENT_PROMPT = `
 Client Requirement Check:
@@ -171,6 +191,281 @@ const ClientRequirementCheck = ({ onPromptSubmit, loading, response, error }) =>
   const [filterValue, setFilterValue] = useState('all');
   const [viewMode, setViewMode] = useState('table'); // 'table' | 'json'
   const [copied, setCopied] = useState(false);
+
+  // MongoDB Client Guidelines Explorer State
+  const [showMongoGuidelines, setShowMongoGuidelines] = useState(false);
+  const [mongoClients, setMongoClients] = useState([]);
+  const [mongoCommon, setMongoCommon] = useState([]);
+  const [mongoLoading, setMongoLoading] = useState(false);
+  const [mongoError, setMongoError] = useState('');
+  const [selectedClient, setSelectedClient] = useState('all');
+  const [clientSearch, setClientSearch] = useState('');
+  const [guidelineCopied, setGuidelineCopied] = useState(false);
+
+  // Superuser & CRUD State
+  const [isSuperuser, setIsSuperuser] = useState(false);
+  const [currentUser, setCurrentUser] = useState('');
+  const [crudLoading, setCrudLoading] = useState(false);
+  const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
+
+  // Dialog State: Add Lender Guideline
+  const [openAddDialog, setOpenAddDialog] = useState(false);
+  const [addForm, setAddForm] = useState({
+    client: '',
+    customClient: '',
+    remark: '',
+    date: new Date().toISOString().split('T')[0]
+  });
+
+  // Dialog State: Edit Lender Guideline
+  const [openEditDialog, setOpenEditDialog] = useState(false);
+  const [editForm, setEditForm] = useState({
+    id: '',
+    client: '',
+    collection: '',
+    remark: '',
+    date: ''
+  });
+
+  // Dialog State: Delete Lender Guideline
+  const [openDeleteDialog, setOpenDeleteDialog] = useState(false);
+  const [itemToDelete, setItemToDelete] = useState(null);
+
+  // Quick Superuser Authentication Unlock Modal
+  const [openAuthDialog, setOpenAuthDialog] = useState(false);
+  const [authInput, setAuthInput] = useState('admin');
+
+  // Check superuser status on mount
+  const checkAuthStatus = useCallback(async (manualUser = null) => {
+    const user = manualUser || localStorage.getItem('username') || '';
+    setCurrentUser(user);
+    if (user === 'admin' || user === 'Abhi') {
+      setIsSuperuser(true);
+      return;
+    }
+    try {
+      const token = localStorage.getItem('authToken');
+      const headers = {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        ...(user ? { 'X-Username': user } : {}),
+      };
+      const res = await fetch(`${API_BASE_URL}/api/guidelines/auth-status/`, { headers });
+      const data = await res.json();
+      if (data.is_superuser) {
+        setIsSuperuser(true);
+      }
+    } catch (e) {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    checkAuthStatus();
+  }, [checkAuthStatus]);
+
+  const handleManualAuthUnlock = async () => {
+    const targetUser = authInput.trim();
+    if (!targetUser) return;
+    setCrudLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/guidelines/auth-status/`, {
+        headers: { 'X-Username': targetUser },
+      });
+      const data = await res.json();
+      if (data.is_superuser) {
+        setIsSuperuser(true);
+        setCurrentUser(targetUser);
+        localStorage.setItem('username', targetUser);
+        setSnackbar({ open: true, message: `Superuser privileges activated for '${targetUser}'.`, severity: 'success' });
+        setOpenAuthDialog(false);
+      } else {
+        setSnackbar({ open: true, message: `'${targetUser}' does not have Superuser access. Use 'admin' or 'Abhi'.`, severity: 'error' });
+      }
+    } catch (e) {
+      setSnackbar({ open: true, message: e.message || 'Auth check failed.', severity: 'error' });
+    } finally {
+      setCrudLoading(false);
+    }
+  };
+
+  const fetchMongoClients = async (forceRefresh = false) => {
+    setMongoLoading(true);
+    setMongoError('');
+    try {
+      const url = `${API_BASE_URL}/api/guidelines/client/${forceRefresh ? '?refresh=true' : ''}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message || `Failed to fetch client guidelines: HTTP ${res.status}`);
+      }
+      setMongoClients(data.data?.clients || []);
+      setMongoCommon(data.data?.common || []);
+    } catch (e) {
+      setMongoError(e.message || 'Could not load client guidelines from MongoDB.');
+    } finally {
+      setMongoLoading(false);
+    }
+  };
+
+  const toggleMongoGuidelines = () => {
+    const nextState = !showMongoGuidelines;
+    setShowMongoGuidelines(nextState);
+    if (nextState) {
+      if (mongoClients.length === 0) {
+        fetchMongoClients();
+      }
+      let data = response;
+      if (typeof response === 'string') {
+        try { data = JSON.parse(response); } catch (e) {}
+      }
+      if (data && !data.lender) {
+        if (data.CLIENT_REQUIREMENT_CHECK) data = data.CLIENT_REQUIREMENT_CHECK;
+      }
+      if (data?.lender && data.lender !== 'General / Unspecified') {
+        setSelectedClient(data.lender);
+      }
+    }
+  };
+
+  // CRUD Handlers
+  const handleOpenAdd = () => {
+    const defaultClient = selectedClient !== 'all' ? selectedClient : (mongoClients[0]?.display_name || 'Visio Lending');
+    setAddForm({
+      client: defaultClient,
+      customClient: '',
+      remark: '',
+      date: new Date().toISOString().split('T')[0]
+    });
+    setOpenAddDialog(true);
+  };
+
+  const handleAddSubmit = async () => {
+    const targetClient = addForm.client === '__new__' ? addForm.customClient.trim() : addForm.client;
+    if (!targetClient || !addForm.remark.trim()) {
+      setSnackbar({ open: true, message: 'Please provide both Lender name and Guideline remark.', severity: 'warning' });
+      return;
+    }
+    setCrudLoading(true);
+    try {
+      const token = localStorage.getItem('authToken');
+      const username = currentUser || localStorage.getItem('username') || 'admin';
+      const res = await fetch(`${API_BASE_URL}/api/guidelines/client/add/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+          'X-Username': username,
+        },
+        body: JSON.stringify({
+          client: targetClient,
+          remark: addForm.remark.trim(),
+          date: addForm.date || new Date().toISOString().split('T')[0],
+          admin_username: username,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.status === 'error') {
+        throw new Error(data.message || `Failed to add client guideline: HTTP ${res.status}`);
+      }
+      setSnackbar({ open: true, message: `Lender requirement for '${data.data?.display_name || targetClient}' added successfully!`, severity: 'success' });
+      setOpenAddDialog(false);
+      setAddForm({ client: '', customClient: '', remark: '', date: '' });
+      await fetchMongoClients(true);
+    } catch (e) {
+      setSnackbar({ open: true, message: e.message || 'Error adding lender guideline.', severity: 'error' });
+    } finally {
+      setCrudLoading(false);
+    }
+  };
+
+  const handleOpenEdit = (item) => {
+    setEditForm({
+      id: item.id,
+      client: item.client || item.collection,
+      collection: item.collection,
+      remark: item.remark || '',
+      date: item.date ? String(item.date).split('T')[0] : new Date().toISOString().split('T')[0]
+    });
+    setOpenEditDialog(true);
+  };
+
+  const handleEditSubmit = async () => {
+    if (!editForm.id || !editForm.collection || !editForm.remark.trim()) {
+      setSnackbar({ open: true, message: 'Guideline remark cannot be empty.', severity: 'warning' });
+      return;
+    }
+    setCrudLoading(true);
+    try {
+      const token = localStorage.getItem('authToken');
+      const username = currentUser || localStorage.getItem('username') || 'admin';
+      const res = await fetch(`${API_BASE_URL}/api/guidelines/client/update/`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+          'X-Username': username,
+        },
+        body: JSON.stringify({
+          collection: editForm.collection,
+          id: editForm.id,
+          remark: editForm.remark.trim(),
+          date: editForm.date,
+          admin_username: username,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.status === 'error') {
+        throw new Error(data.message || `Failed to update client guideline: HTTP ${res.status}`);
+      }
+      setSnackbar({ open: true, message: `Lender guideline for '${editForm.client}' updated successfully!`, severity: 'success' });
+      setOpenEditDialog(false);
+      await fetchMongoClients(true);
+    } catch (e) {
+      setSnackbar({ open: true, message: e.message || 'Error updating lender guideline.', severity: 'error' });
+    } finally {
+      setCrudLoading(false);
+    }
+  };
+
+  const handleOpenDelete = (item) => {
+    setItemToDelete(item);
+    setOpenDeleteDialog(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!itemToDelete || !itemToDelete.id || !itemToDelete.collection) return;
+    setCrudLoading(true);
+    try {
+      const token = localStorage.getItem('authToken');
+      const username = currentUser || localStorage.getItem('username') || 'admin';
+      const url = `${API_BASE_URL}/api/guidelines/client/delete/?collection=${encodeURIComponent(itemToDelete.collection)}&id=${encodeURIComponent(itemToDelete.id)}`;
+      const res = await fetch(url, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+          'X-Username': username,
+        },
+        body: JSON.stringify({
+          collection: itemToDelete.collection,
+          id: itemToDelete.id,
+          admin_username: username,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.status === 'error') {
+        throw new Error(data.message || `Failed to delete client guideline: HTTP ${res.status}`);
+      }
+      setSnackbar({ open: true, message: 'Lender guideline deleted successfully!', severity: 'success' });
+      setOpenDeleteDialog(false);
+      setItemToDelete(null);
+      await fetchMongoClients(true);
+    } catch (e) {
+      setSnackbar({ open: true, message: e.message || 'Error deleting lender guideline.', severity: 'error' });
+    } finally {
+      setCrudLoading(false);
+    }
+  };
 
   const handleCheck = () => {
     onPromptSubmit(CLIENT_REQUIREMENT_PROMPT);
@@ -404,7 +699,20 @@ const ClientRequirementCheck = ({ onPromptSubmit, loading, response, error }) =>
                       {sortedDetails.length > 0 ? (
                         sortedDetails.map((item, index) => (
                           <TableRow key={index}>
-                            <TableCell>{renderValue(item.requirement)}</TableCell>
+                            <TableCell>
+                              <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
+                                <span>{renderValue(item.requirement)}</span>
+                                {(item.is_mongo || (item.source && item.source.includes('MongoDB'))) && (
+                                  <Chip
+                                    size="small"
+                                    label="MongoDB Verified"
+                                    color="info"
+                                    variant="outlined"
+                                    sx={{ height: 20, fontSize: '0.68rem', fontWeight: 600, borderColor: '#90caf9', color: '#1565c0', bgcolor: '#f0f7ff' }}
+                                  />
+                                )}
+                              </Stack>
+                            </TableCell>
                             <TableCell>
                               <span style={getStatusStyle(item.status)}>
                                 {renderValue(item.status)}
@@ -426,26 +734,530 @@ const ClientRequirementCheck = ({ onPromptSubmit, loading, response, error }) =>
               )}
             </>
           )}
+          {data.mongo_guidelines && data.mongo_guidelines.length > 0 && (
+            <Alert severity="info" sx={{ mt: 2 }} icon={<StorageIcon fontSize="inherit" />}>
+              <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>
+                Active MongoDB Guidelines for Lender ({data.lender || 'Identified Lender'}):
+              </Typography>
+              <Box component="ul" sx={{ m: 0, pl: 2.5, mt: 0.5 }}>
+                {data.mongo_guidelines.map((g, idx) => (
+                  <li key={idx}>
+                    <Typography variant="body2">{g}</Typography>
+                  </li>
+                ))}
+              </Box>
+            </Alert>
+          )}
         </Paper>
       </Stack>
     );
   }, [response, filterValue, viewMode, copied]);
 
+  const allGuidelineItems = [];
+  mongoClients.forEach(cl => {
+    if (selectedClient !== 'all' && cl.collection !== selectedClient) return;
+    (cl.guidelines || []).forEach(g => {
+      if (clientSearch.trim()) {
+        const q = clientSearch.toLowerCase();
+        const matchName = (cl.display_name || '').toLowerCase().includes(q);
+        const matchRemark = (g.remark || '').toLowerCase().includes(q);
+        if (!matchName && !matchRemark) return;
+      }
+      allGuidelineItems.push({
+        client: cl.display_name,
+        collection: cl.collection,
+        remark: g.remark,
+        date: g.date,
+        id: g.id
+      });
+    });
+  });
+
   return (
     <div id="client-requirement-check-section" className="card shadow mb-4">
-      <div className="card-header CAR1 bg-primary text-white">
+      <div className="card-header CAR1 bg-primary text-white d-flex justify-content-between align-items-center">
         <strong>Client Requirement Check</strong>
+        <Chip
+          label="MongoDB Instruction (Common + 39 Lenders)"
+          size="small"
+          sx={{ bgcolor: 'rgba(255,255,255,0.2)', color: 'white', fontWeight: 500 }}
+        />
       </div>
       <div className="card-body">
         <Stack spacing={2}>
-          <Button
-            onClick={handleCheck}
-            variant="contained"
-            color="secondary"
-            disabled={loading}
+          <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap">
+            <Button
+              onClick={handleCheck}
+              variant="contained"
+              color="secondary"
+              disabled={loading}
+            >
+              {loading ? <CircularProgress size={24} /> : 'Check Client Requirements'}
+            </Button>
+
+            <Button
+              onClick={toggleMongoGuidelines}
+              variant={showMongoGuidelines ? "contained" : "outlined"}
+              color="primary"
+              startIcon={<StorageIcon />}
+            >
+              {showMongoGuidelines ? 'Hide MongoDB Guidelines' : 'View Guidelines from MongoDB'}
+            </Button>
+          </Stack>
+
+          {/* MongoDB Guidelines Explorer Panel */}
+          <Collapse in={showMongoGuidelines}>
+            <Paper elevation={2} sx={{ p: 2.5, mt: 1, border: '1px solid #90caf9', bgcolor: '#fbfdff' }}>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1.5} sx={{ mb: 2 }}>
+                <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">
+                  <Typography variant="subtitle1" sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <StorageIcon color="primary" fontSize="small" />
+                    MongoDB Lender / Client Guidelines (Live Database)
+                  </Typography>
+                  {isSuperuser ? (
+                    <Chip
+                      icon={<AdminPanelSettingsIcon />}
+                      label={`Superuser: ${currentUser || 'admin'}`}
+                      color="success"
+                      size="small"
+                      sx={{ fontWeight: 'bold' }}
+                    />
+                  ) : (
+                    <Tooltip title="Click to unlock Superuser CRUD privileges">
+                      <Chip
+                        icon={<AdminPanelSettingsIcon />}
+                        label="Admin Login"
+                        size="small"
+                        variant="outlined"
+                        clickable
+                        onClick={() => setOpenAuthDialog(true)}
+                      />
+                    </Tooltip>
+                  )}
+                </Box>
+
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                  <Button
+                    size="small"
+                    variant="contained"
+                    color="primary"
+                    startIcon={<RefreshIcon />}
+                    onClick={handleCheck}
+                    disabled={loading}
+                  >
+                    Cross-Verify Document with MongoDB Guidelines
+                  </Button>
+                  {isSuperuser && (
+                    <Button
+                      size="small"
+                      variant="contained"
+                      color="success"
+                      startIcon={<AddIcon />}
+                      onClick={handleOpenAdd}
+                    >
+                      Add Guideline
+                    </Button>
+                  )}
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<RefreshIcon />}
+                    onClick={() => fetchMongoClients(true)}
+                    disabled={mongoLoading}
+                  >
+                    Refresh
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<ContentCopyIcon />}
+                    onClick={() => {
+                      navigator.clipboard.writeText(CLIENT_REQUIREMENT_PROMPT);
+                      setGuidelineCopied(true);
+                      setTimeout(() => setGuidelineCopied(false), 2000);
+                    }}
+                  >
+                    {guidelineCopied ? 'Copied Prompt!' : 'Copy Prompt'}
+                  </Button>
+                </Stack>
+              </Stack>
+
+              {mongoLoading ? (
+                <Box display="flex" justifyContent="center" alignItems="center" py={4} gap={1.5}>
+                  <CircularProgress size={24} />
+                  <Typography variant="body2" color="text.secondary">Loading client guidelines from MongoDB cluster...</Typography>
+                </Box>
+              ) : mongoError ? (
+                <Alert severity="error">{mongoError}</Alert>
+              ) : (
+                <>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} sx={{ mb: 2 }}>
+                    <FormControl size="small" sx={{ minWidth: 220 }}>
+                      <InputLabel id="mongo-client-select-label">Select Lender/Client</InputLabel>
+                      <Select
+                        labelId="mongo-client-select-label"
+                        id="mongo-client-select"
+                        value={selectedClient}
+                        label="Select Lender/Client"
+                        onChange={(e) => setSelectedClient(e.target.value)}
+                      >
+                        <MenuItem value="all">All Lenders ({mongoClients.length})</MenuItem>
+                        {mongoClients.map(cl => (
+                          <MenuItem key={cl.collection} value={cl.collection}>
+                            {cl.display_name} ({cl.count || cl.guidelines?.length || 0})
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+
+                    <TextField
+                      size="small"
+                      placeholder="Search lender or guideline text..."
+                      value={clientSearch}
+                      onChange={(e) => setClientSearch(e.target.value)}
+                      fullWidth
+                      InputProps={{
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <SearchIcon fontSize="small" />
+                          </InputAdornment>
+                        ),
+                      }}
+                    />
+                  </Stack>
+
+                  <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
+                    Showing {allGuidelineItems.length} guidelines across {selectedClient === 'all' ? `${mongoClients.length} lenders` : selectedClient}
+                  </Typography>
+
+                  <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 380 }}>
+                    <Table size="small" stickyHeader>
+                      <TableHead>
+                        <TableRow sx={{ bgcolor: '#f0f4f8' }}>
+                          <TableCell sx={{ fontWeight: 'bold', width: '180px' }}>Lender / Client</TableCell>
+                          <TableCell sx={{ fontWeight: 'bold' }}>Guideline / Requirement (from MongoDB)</TableCell>
+                          <TableCell sx={{ fontWeight: 'bold', width: '110px' }}>Date</TableCell>
+                          <TableCell sx={{ fontWeight: 'bold', width: '60px', textAlign: 'center' }}>Copy</TableCell>
+                          {isSuperuser && (
+                            <TableCell sx={{ fontWeight: 'bold', width: '100px', textAlign: 'center' }}>Actions</TableCell>
+                          )}
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {allGuidelineItems.length > 0 ? (
+                          allGuidelineItems.map((item, idx) => (
+                            <TableRow key={item.id || idx} hover>
+                              <TableCell>
+                                <Chip
+                                  label={item.client}
+                                  size="small"
+                                  color="secondary"
+                                  variant="outlined"
+                                  sx={{ fontWeight: 'bold', maxWidth: 170 }}
+                                />
+                              </TableCell>
+                              <TableCell sx={{ whiteSpace: 'pre-wrap' }}>
+                                <Typography variant="body2">{item.remark}</Typography>
+                              </TableCell>
+                              <TableCell>
+                                <Typography variant="caption" color="text.secondary">
+                                  {item.date ? String(item.date).split('T')[0] : '-'}
+                                </Typography>
+                              </TableCell>
+                              <TableCell align="center">
+                                <Tooltip title="Copy Guideline">
+                                  <IconButton
+                                    size="small"
+                                    onClick={() => navigator.clipboard.writeText(item.remark)}
+                                  >
+                                    <ContentCopyIcon fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
+                              </TableCell>
+                              {isSuperuser && (
+                                <TableCell align="center">
+                                  <Stack direction="row" spacing={0.5} justifyContent="center">
+                                    <Tooltip title="Edit Guideline">
+                                      <IconButton
+                                        size="small"
+                                        color="primary"
+                                        onClick={() => handleOpenEdit(item)}
+                                      >
+                                        <EditIcon fontSize="small" />
+                                      </IconButton>
+                                    </Tooltip>
+                                    <Tooltip title="Delete Guideline">
+                                      <IconButton
+                                        size="small"
+                                        color="error"
+                                        onClick={() => handleOpenDelete(item)}
+                                      >
+                                        <DeleteOutlineIcon fontSize="small" />
+                                      </IconButton>
+                                    </Tooltip>
+                                  </Stack>
+                                </TableCell>
+                              )}
+                            </TableRow>
+                          ))
+                        ) : (
+                          <TableRow>
+                            <TableCell colSpan={isSuperuser ? 5 : 4} align="center">
+                              No guidelines match the selected client or search.
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+
+                  {mongoCommon && mongoCommon.length > 0 && selectedClient === 'all' && (
+                    <Box sx={{ mt: 2, p: 1.5, bgcolor: '#f9f9f9', borderRadius: 1, border: '1px dashed #ccc' }}>
+                      <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 0.5 }}>
+                        Common Guidelines for All Lenders ({mongoCommon.length}):
+                      </Typography>
+                      <Box component="ul" sx={{ m: 0, pl: 2.5, maxHeight: 150, overflowY: 'auto' }}>
+                        {mongoCommon.slice(0, 5).map((comm, cIdx) => (
+                          <li key={cIdx}>
+                            <Typography variant="caption">{comm}</Typography>
+                          </li>
+                        ))}
+                      </Box>
+                    </Box>
+                  )}
+                </>
+              )}
+            </Paper>
+          </Collapse>
+
+          {/* Add Client Guideline Dialog */}
+          <Dialog open={openAddDialog} onClose={() => !crudLoading && setOpenAddDialog(false)} maxWidth="sm" fullWidth>
+            <DialogTitle sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 1 }}>
+              <AddIcon color="success" /> Add Lender Guideline (MongoDB)
+            </DialogTitle>
+            <DialogContent dividers>
+              <Stack spacing={2} sx={{ mt: 1 }}>
+                <Typography variant="body2" color="text.secondary">
+                  Add a new guideline to a specific lender collection in the <strong>Instruction</strong> database.
+                </Typography>
+
+                <FormControl size="small" fullWidth>
+                  <InputLabel id="add-client-select-label">Lender / Client</InputLabel>
+                  <Select
+                    labelId="add-client-select-label"
+                    value={addForm.client}
+                    label="Lender / Client"
+                    onChange={(e) => setAddForm(prev => ({ ...prev, client: e.target.value }))}
+                  >
+                    {mongoClients.map(cl => (
+                      <MenuItem key={cl.collection} value={cl.display_name}>
+                        {cl.display_name} ({cl.collection})
+                      </MenuItem>
+                    ))}
+                    <MenuItem value="__new__" sx={{ fontStyle: 'italic', color: 'primary.main' }}>
+                      + Enter New / Other Lender Name...
+                    </MenuItem>
+                  </Select>
+                </FormControl>
+
+                {addForm.client === '__new__' && (
+                  <TextField
+                    label="New Lender / Client Name"
+                    fullWidth
+                    size="small"
+                    value={addForm.customClient}
+                    onChange={(e) => setAddForm(prev => ({ ...prev, customClient: e.target.value }))}
+                    placeholder="e.g. Apex Lending Corp"
+                    required
+                  />
+                )}
+
+                <TextField
+                  label="Guideline / Requirement Remark"
+                  fullWidth
+                  multiline
+                  rows={4}
+                  value={addForm.remark}
+                  onChange={(e) => setAddForm(prev => ({ ...prev, remark: e.target.value }))}
+                  placeholder="Enter specific instructions or requirements for this lender..."
+                  required
+                />
+
+                <TextField
+                  label="Effective Date"
+                  type="date"
+                  size="small"
+                  fullWidth
+                  InputLabelProps={{ shrink: true }}
+                  value={addForm.date}
+                  onChange={(e) => setAddForm(prev => ({ ...prev, date: e.target.value }))}
+                />
+              </Stack>
+            </DialogContent>
+            <DialogActions sx={{ px: 3, py: 2 }}>
+              <Button onClick={() => setOpenAddDialog(false)} disabled={crudLoading}>
+                Cancel
+              </Button>
+              <Button
+                variant="contained"
+                color="success"
+                onClick={handleAddSubmit}
+                disabled={
+                  crudLoading ||
+                  !addForm.remark.trim() ||
+                  (addForm.client === '__new__' ? !addForm.customClient.trim() : !addForm.client)
+                }
+                startIcon={crudLoading ? <CircularProgress size={18} color="inherit" /> : <AddIcon />}
+              >
+                {crudLoading ? 'Adding...' : 'Add Guideline'}
+              </Button>
+            </DialogActions>
+          </Dialog>
+
+          {/* Edit Client Guideline Dialog */}
+          <Dialog open={openEditDialog} onClose={() => !crudLoading && setOpenEditDialog(false)} maxWidth="sm" fullWidth>
+            <DialogTitle sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 1 }}>
+              <EditIcon color="primary" /> Edit Lender Guideline (MongoDB)
+            </DialogTitle>
+            <DialogContent dividers>
+              <Stack spacing={2} sx={{ mt: 1 }}>
+                <Box>
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    Lender / Collection:
+                  </Typography>
+                  <Chip
+                    label={`${editForm.client} (${editForm.collection})`}
+                    color="secondary"
+                    variant="outlined"
+                    sx={{ fontWeight: 'bold', mt: 0.5 }}
+                  />
+                </Box>
+
+                <TextField
+                  label="Guideline / Requirement Remark"
+                  fullWidth
+                  multiline
+                  rows={4}
+                  value={editForm.remark}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, remark: e.target.value }))}
+                  required
+                />
+
+                <TextField
+                  label="Date"
+                  type="date"
+                  size="small"
+                  fullWidth
+                  InputLabelProps={{ shrink: true }}
+                  value={editForm.date}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, date: e.target.value }))}
+                />
+
+                <Typography variant="caption" color="text.secondary">
+                  Document ObjectId: {editForm.id}
+                </Typography>
+              </Stack>
+            </DialogContent>
+            <DialogActions sx={{ px: 3, py: 2 }}>
+              <Button onClick={() => setOpenEditDialog(false)} disabled={crudLoading}>
+                Cancel
+              </Button>
+              <Button
+                variant="contained"
+                color="primary"
+                onClick={handleEditSubmit}
+                disabled={crudLoading || !editForm.remark.trim()}
+                startIcon={crudLoading ? <CircularProgress size={18} color="inherit" /> : <EditIcon />}
+              >
+                {crudLoading ? 'Saving...' : 'Save Changes'}
+              </Button>
+            </DialogActions>
+          </Dialog>
+
+          {/* Delete Client Guideline Confirmation Dialog */}
+          <Dialog open={openDeleteDialog} onClose={() => !crudLoading && setOpenDeleteDialog(false)} maxWidth="xs" fullWidth>
+            <DialogTitle sx={{ fontWeight: 'bold', color: 'error.main', display: 'flex', alignItems: 'center', gap: 1 }}>
+              <DeleteOutlineIcon color="error" /> Confirm Delete
+            </DialogTitle>
+            <DialogContent>
+              <DialogContentText>
+                Are you sure you want to permanently delete this guideline for <strong>{itemToDelete?.client}</strong> (Collection: <code>{itemToDelete?.collection}</code>) from MongoDB?
+              </DialogContentText>
+              {itemToDelete?.remark && (
+                <Paper variant="outlined" sx={{ p: 1.5, mt: 2, bgcolor: '#fff5f5' }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', maxHeight: 80, overflowY: 'auto' }}>
+                    "{itemToDelete.remark}"
+                  </Typography>
+                </Paper>
+              )}
+            </DialogContent>
+            <DialogActions sx={{ px: 2.5, py: 1.5 }}>
+              <Button onClick={() => setOpenDeleteDialog(false)} disabled={crudLoading}>
+                Cancel
+              </Button>
+              <Button
+                variant="contained"
+                color="error"
+                onClick={handleDeleteConfirm}
+                disabled={crudLoading}
+                startIcon={crudLoading ? <CircularProgress size={18} color="inherit" /> : <DeleteOutlineIcon />}
+              >
+                {crudLoading ? 'Deleting...' : 'Delete'}
+              </Button>
+            </DialogActions>
+          </Dialog>
+
+          {/* Quick Superuser Admin Unlock Dialog */}
+          <Dialog open={openAuthDialog} onClose={() => !crudLoading && setOpenAuthDialog(false)} maxWidth="xs" fullWidth>
+            <DialogTitle sx={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 1 }}>
+              <AdminPanelSettingsIcon color="primary" /> Superuser Admin Access
+            </DialogTitle>
+            <DialogContent>
+              <DialogContentText sx={{ mb: 2 }}>
+                Enter an authorized Superuser username (e.g. <code>admin</code> or <code>Abhi</code>) to unlock live MongoDB add, edit, and delete controls.
+              </DialogContentText>
+              <TextField
+                autoFocus
+                label="Superuser Username"
+                fullWidth
+                size="small"
+                value={authInput}
+                onChange={(e) => setAuthInput(e.target.value)}
+                placeholder="admin"
+              />
+            </DialogContent>
+            <DialogActions sx={{ px: 2.5, py: 1.5 }}>
+              <Button onClick={() => setOpenAuthDialog(false)} disabled={crudLoading}>
+                Cancel
+              </Button>
+              <Button
+                variant="contained"
+                color="primary"
+                onClick={handleManualAuthUnlock}
+                disabled={crudLoading || !authInput.trim()}
+              >
+                {crudLoading ? 'Checking...' : 'Activate Admin'}
+              </Button>
+            </DialogActions>
+          </Dialog>
+
+          {/* Feedback Snackbar */}
+          <Snackbar
+            open={snackbar.open}
+            autoHideDuration={4000}
+            onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
           >
-            {loading ? <CircularProgress size={24} /> : 'Check Client Requirements'}
-          </Button>
+            <Alert
+              onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+              severity={snackbar.severity}
+              variant="filled"
+              sx={{ width: '100%' }}
+            >
+              {snackbar.message}
+            </Alert>
+          </Snackbar>
+
           {error && <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>}
           {response && renderResponse()}
         </Stack>
